@@ -6,11 +6,24 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ==========================
+# Dependencias
+# ==========================
+
 find_package(OpenCV CONFIG REQUIRED)
+find_package(libraw CONFIG REQUIRED)
+
+# ==========================
+# Ejecutable
+# ==========================
 
 add_executable(debayering
         src/main.cpp
 )
+
+# ==========================
+# Includes propios
+# ==========================
 
 target_include_directories(debayering
         PRIVATE
@@ -18,9 +31,14 @@ target_include_directories(debayering
         ${OpenCV_INCLUDE_DIRS}
 )
 
+# ==========================
+# Librerías
+# ==========================
+
 target_link_libraries(debayering
         PRIVATE
         ${OpenCV_LIBS}
+        libraw::raw
 )
 
 message(STATUS "OpenCV version: ${OpenCV_VERSION}")

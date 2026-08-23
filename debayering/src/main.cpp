@@ -5,25 +5,35 @@
  * 2026-08-23
  */
 #include <iostream>
+
 #include <opencv2/opencv.hpp>
+#include <libraw/libraw.h>
 
 int main()
 {
-    std::cout << "======================================" << std::endl;
-    std::cout << " Practica: Debayering RAW -> RGB" << std::endl;
-    std::cout << "======================================" << std::endl;
+    std::cout << "======================================\n";
+    std::cout << " Practica: Debayering RAW -> RGB\n";
+    std::cout << "======================================\n\n";
 
-    std::cout << "OpenCV version: " << CV_VERSION << std::endl;
+    // OpenCV
+    std::cout << "OpenCV version: "
+              << CV_VERSION
+              << '\n';
 
-    cv::Mat image = cv::Mat::zeros(480, 640, CV_8UC3);
+    cv::Mat image = cv::Mat::zeros(
+        480,
+        640,
+        CV_8UC3
+    );
 
-    std::cout << "Imagen creada correctamente" << std::endl;
-    std::cout << "Resolucion: "
-              << image.cols << " x "
-              << image.rows << std::endl;
+    std::cout << "OpenCV funcionando correctamente\n";
 
-    std::cout << "Canales: "
-              << image.channels() << std::endl;
+    // LibRaw
+    LibRaw rawProcessor;
+
+    std::cout << "LibRaw inicializado correctamente\n";
+
+    std::cout << "\nEntorno listo para procesar RAW.\n";
 
     return 0;
 }
