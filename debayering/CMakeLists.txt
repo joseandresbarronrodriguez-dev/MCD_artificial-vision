@@ -19,6 +19,18 @@ find_package(libraw CONFIG REQUIRED)
 
 add_executable(debayering
         src/main.cpp
+        include/RawLoader.h
+        src/RawLoader.cpp
+        include/Debayer.h
+        src/Debayer.cpp
+        include/ImageUtils.h
+        src/ImageUtils.cpp
+        include/Benchmark.h
+        src/Benchmark.cpp
+        include/LibRawReference.h
+        src/LibRawReference.cpp
+        include/BayerSelector.h
+        src/BayerSelector.cpp
 )
 
 # ==========================
