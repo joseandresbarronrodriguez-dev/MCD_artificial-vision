@@ -51,6 +51,8 @@ find_package(Eigen3 CONFIG REQUIRED)
 add_executable(hough_harris_arm
 
         src/main.cpp
+        include/HoughAccumulator.h
+        src/HoughAccumulator.cpp
 
 )
 

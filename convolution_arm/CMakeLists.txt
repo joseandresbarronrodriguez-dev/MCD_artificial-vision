@@ -16,6 +16,7 @@ add_executable(convolution_arm
         src/energy.c
         include/csv_writer.h
         src/csv_writer.c
+        ../hough_harris_arm/src/main.cpp
 )
 
 target_include_directories(convolution_arm PRIVATE
