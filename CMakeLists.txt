@@ -19,3 +19,4 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # ============================
 add_subdirectory(debayering)
 add_subdirectory(convolution_arm)
+add_subdirectory(hough_harris_arm)
