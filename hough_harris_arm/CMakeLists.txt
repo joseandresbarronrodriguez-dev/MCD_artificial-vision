@@ -55,6 +55,8 @@ add_executable(hough_harris_arm
         src/HoughAccumulator.cpp
         include/HarrisScore.h
         src/HarrisScore.cpp
+        include/Benchmark.h
+        src/Benchmark.cpp
 
 )
 
