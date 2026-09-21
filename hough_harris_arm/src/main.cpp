@@ -36,6 +36,7 @@
 
 // Implementación propia
 #include "HoughAccumulator.h"
+#include "HarrisScore.h"
 
 
 // ============================================================
@@ -577,6 +578,316 @@ int main(int argc, char* argv[])
             << " HOUGH EJECUTADO CORRECTAMENTE\n"
             << "========================================\n";
 
+    // ========================================================
+    // 15. EJECUTAR NUESTRO SCORE DE HARRIS
+    // ========================================================
+    //
+    // En esta primera prueba solamente validamos:
+    //
+    //      - dimensiones del mapa
+    //      - valor mínimo
+    //      - valor máximo
+    //
+    // Todavía NO comparamos contra cv::cornerHarris().
+    // ========================================================
+
+    std::cout
+                    << "\n========================================\n"
+                    << " HARRIS SCORE PROPIO\n"
+                    << "========================================\n";
+
+
+    // Parámetros que mantendremos fijos posteriormente
+    // durante el benchmark PC vs ARM.
+    constexpr int HARRIS_BLOCK_SIZE =
+                    3;
+
+    constexpr int HARRIS_SOBEL_KERNEL =
+                    3;
+
+    constexpr float HARRIS_K =
+                    0.04f;
+
+
+    // Creamos nuestro detector.
+    HarrisScore harris(
+            HARRIS_BLOCK_SIZE,
+            HARRIS_SOBEL_KERNEL,
+            HARRIS_K
+    );
+
+
+    // Calculamos el mapa completo de respuesta.
+    cv::Mat harrisResponse =
+                    harris.compute(
+                            gray
+                    );
+
+
+    // ========================================================
+    // 16. VALIDAR DIMENSIONES
+    // ========================================================
+
+    std::cout
+                    << "Tamano respuesta:    "
+                    << harrisResponse.cols
+                    << " x "
+                    << harrisResponse.rows
+                    << "\n";
+
+
+    std::cout
+                    << "Tipo OpenCV:         "
+                    << harrisResponse.type()
+                    << "\n";
+
+
+    // ========================================================
+    // 17. OBTENER MÍNIMO Y MÁXIMO
+    // ========================================================
+    //
+    // Harris produce:
+    //
+    //      R grande positivo  -> posible esquina
+    //
+    //      R negativo         -> normalmente borde
+    //
+    //      R cercano a cero   -> región plana
+    //
+    // ========================================================
+
+    double harrisMin;
+    double harrisMax;
+
+    cv::Point harrisMinLocation;
+    cv::Point harrisMaxLocation;
+
+
+    cv::minMaxLoc(
+            harrisResponse,
+            &harrisMin,
+            &harrisMax,
+            &harrisMinLocation,
+            &harrisMaxLocation
+    );
+
+
+    std::cout
+                    << "Score minimo:        "
+                    << harrisMin
+                    << "\n";
+
+
+    std::cout
+                    << "Score maximo:        "
+                    << harrisMax
+                    << "\n";
+
+
+    std::cout
+                    << "Maximo localizado:   ("
+                    << harrisMaxLocation.x
+                    << ", "
+                    << harrisMaxLocation.y
+                    << ")\n";
+
+
+    // ========================================================
+    // 18. NORMALIZAR PARA VISUALIZACIÓN
+    // ========================================================
+    //
+    // El mapa Harris utiliza float y puede contener números
+    // positivos y negativos.
+    //
+    // Para guardarlo como imagen convertimos el rango:
+    //
+    //      min ... max
+    //
+    // a:
+    //
+    //      0 ... 255
+    //
+    // Esta normalización se utiliza SOLO para visualización.
+    // No modifica los datos que posteriormente compararemos.
+    // ========================================================
+
+    cv::Mat harrisNormalized;
+
+
+    cv::normalize(
+            harrisResponse,
+            harrisNormalized,
+            0,
+            255,
+            cv::NORM_MINMAX,
+            CV_8UC1
+    );
+
+
+    cv::imwrite(
+            "results/harris_custom.jpg",
+            harrisNormalized
+    );
+
+
+    std::cout
+                    << "Mapa guardado:       "
+                    << "results/harris_custom.jpg\n";
+
+    // ========================================================
+    // 19. HARRIS DE REFERENCIA CON OPENCV
+    // ========================================================
+    //
+    // Utilizamos cv::cornerHarris() para validar nuestra
+    // implementación.
+    //
+    // IMPORTANTE:
+    //
+    // Ambos métodos utilizan:
+    //
+    //      blockSize = 3
+    //      Sobel      = 3
+    //      k          = 0.04
+    //
+    // Para que la comparación sea válida.
+    // ========================================================
+
+    cv::Mat gray32f;
+
+    gray.convertTo(
+            gray32f,
+            CV_32F,
+            1.0 / 255.0
+    );
+
+
+    cv::Mat opencvHarrisResponse;
+
+
+    cv::cornerHarris(
+            gray32f,
+            opencvHarrisResponse,
+            HARRIS_BLOCK_SIZE,
+            HARRIS_SOBEL_KERNEL,
+            HARRIS_K
+    );
+
+    // ========================================================
+    // 20. ESTADÍSTICAS DE OPENCV
+    // ========================================================
+
+    double opencvHarrisMin;
+    double opencvHarrisMax;
+
+    cv::Point opencvHarrisMinLocation;
+    cv::Point opencvHarrisMaxLocation;
+
+
+    cv::minMaxLoc(
+            opencvHarrisResponse,
+            &opencvHarrisMin,
+            &opencvHarrisMax,
+            &opencvHarrisMinLocation,
+            &opencvHarrisMaxLocation
+    );
+
+
+    std::cout
+                    << "\n========================================\n"
+                    << " COMPARACION HARRIS CON OPENCV\n"
+                    << "========================================\n";
+
+
+    std::cout
+                    << "Score minimo OpenCV: "
+                    << opencvHarrisMin
+                    << "\n";
+
+
+    std::cout
+                    << "Score maximo OpenCV: "
+                    << opencvHarrisMax
+                    << "\n";
+
+
+    std::cout
+                    << "Maximo OpenCV:       ("
+                    << opencvHarrisMaxLocation.x
+                    << ", "
+                    << opencvHarrisMaxLocation.y
+                    << ")\n";
+
+    // ========================================================
+    // 21. COMPARACIÓN NUMÉRICA DE LOS MAPAS
+    // ========================================================
+    //
+    // cornerHarris() puede utilizar escalas internas diferentes.
+    //
+    // Por eso normalizamos ambos mapas antes de calcular el error.
+    // Esto nos permite comparar principalmente la estructura
+    // espacial de la respuesta.
+    // ========================================================
+
+    cv::Mat customHarrisNorm;
+    cv::Mat opencvHarrisNorm;
+
+
+    cv::normalize(
+            harrisResponse,
+            customHarrisNorm,
+            0.0,
+            1.0,
+            cv::NORM_MINMAX,
+            CV_32F
+    );
+
+
+    cv::normalize(
+            opencvHarrisResponse,
+            opencvHarrisNorm,
+            0.0,
+            1.0,
+            cv::NORM_MINMAX,
+            CV_32F
+    );
+
+    const double harrisRmse =
+                    cv::norm(
+                            customHarrisNorm,
+                            opencvHarrisNorm,
+                            cv::NORM_L2
+                    )
+                    /
+                    std::sqrt(
+                            static_cast<double>(
+                                    gray.total()
+                            )
+                    );
+
+
+    std::cout
+                    << "RMSE normalizado:    "
+                    << harrisRmse
+                    << "\n";
+
+    cv::Mat opencvHarrisVisualization;
+
+
+    cv::normalize(
+            opencvHarrisResponse,
+            opencvHarrisVisualization,
+            0,
+            255,
+            cv::NORM_MINMAX,
+            CV_8UC1
+    );
+
+
+    cv::imwrite(
+            "results/harris_opencv.jpg",
+            opencvHarrisVisualization
+    );
 
     return 0;
+
 }

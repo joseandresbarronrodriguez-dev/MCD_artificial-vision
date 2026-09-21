@@ -53,6 +53,8 @@ add_executable(hough_harris_arm
         src/main.cpp
         include/HoughAccumulator.h
         src/HoughAccumulator.cpp
+        include/HarrisScore.h
+        src/HarrisScore.cpp
 
 )
 
