@@ -1,32 +1,34 @@
 /**
  * ============================================================
- * TAREA 3 - HOUGH TRANSFORM + HARRIS CORNER SCORE
+ * TAREA 3 - HOUGH + HARRIS ARM BENCHMARK
  * ============================================================
  *
- * Archivo:
- *      main.cpp
+ * Objetivo:
  *
- * Objetivo de esta etapa:
+ *   Implementar y comparar:
  *
- *      1. Cargar una imagen.
- *      2. Convertirla a escala de grises.
- *      3. Detectar bordes utilizando Canny.
- *      4. Ejecutar nuestro acumulador de Hough.
- *      5. Obtener la línea con mayor número de votos.
- *      6. Comparar contra cv::HoughLines().
- *      7. Guardar resultados visuales.
+ *      1. Acumulador de Hough propio usando Eigen.
+ *      2. cv::HoughLines().
  *
- * Todavía NO realizamos:
+ *      3. Score de Harris propio usando Eigen.
+ *      4. cv::cornerHarris().
+ *      5. cv::cornerMinEigenVal().
  *
- *      - benchmark de tiempos
- *      - Harris
+ * Además:
+ *
+ *      - validación numérica
+ *      - visualización
+ *      - Non-Maximum Suppression para Harris
+ *      - benchmark reproducible
  *
  * ============================================================
  */
 
 #include <cmath>
-#include <iostream>
+#include <filesystem>
 #include <iomanip>
+#include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -35,36 +37,19 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
-// Implementación propia
-#include "HoughAccumulator.h"
-#include "HarrisScore.h"
+// Implementaciones propias
 #include "Benchmark.h"
+#include "HarrisScore.h"
+#include "HoughAccumulator.h"
+
+
+namespace fs = std::filesystem;
 
 
 // ============================================================
-// FUNCIÓN AUXILIAR PARA DIBUJAR UNA LÍNEA DE HOUGH
+// DIBUJAR LÍNEA DE HOUGH
 // ============================================================
 
-/**
- * @brief Dibuja una línea expresada en coordenadas polares.
- *
- * La Transformada de Hough representa una línea mediante:
- *
- *      rho
- *      theta
- *
- * utilizando:
- *
- *      rho = x*cos(theta) + y*sin(theta)
- *
- * Para visualizarla, convertimos esta representación en
- * dos puntos suficientemente alejados.
- *
- * @param image Imagen donde se dibujará la línea.
- * @param rho Distancia de la línea al origen.
- * @param theta Ángulo en radianes.
- * @param color Color BGR utilizado para dibujar.
- */
 void drawHoughLine(
         cv::Mat& image,
         float rho,
@@ -72,7 +57,6 @@ void drawHoughLine(
         const cv::Scalar& color
 )
 {
-    // Componentes de la normal de la línea.
     const double a =
             std::cos(theta);
 
@@ -80,7 +64,6 @@ void drawHoughLine(
             std::sin(theta);
 
 
-    // Punto base de la línea.
     const double x0 =
             a * rho;
 
@@ -88,8 +71,6 @@ void drawHoughLine(
             b * rho;
 
 
-    // Creamos dos puntos muy alejados para representar
-    // visualmente la línea completa sobre la imagen.
     cv::Point point1;
     cv::Point point2;
 
@@ -130,46 +111,220 @@ void drawHoughLine(
     );
 }
 
+
 // ============================================================
-// MOSTRAR RESULTADOS DEL BENCHMARK
+// IMPRIMIR RESULTADOS DE BENCHMARK
 // ============================================================
 
 void printBenchmarkStats(
         const BenchmarkStats& stats
 )
 {
-        std::cout
-                << std::left
-                << std::setw(28)
-                << stats.name
+    std::cout
+            << std::left
+            << std::setw(28)
+            << stats.name
 
-                << " Mean: "
-                << std::setw(10)
-                << std::fixed
-                << std::setprecision(4)
-                << stats.meanMs
-                << " ms"
+            << " Mean: "
+            << std::setw(10)
+            << std::fixed
+            << std::setprecision(4)
+            << stats.meanMs
+            << " ms"
 
-                << " | SD: "
-                << std::setw(10)
-                << stats.stdDevMs
+            << " | SD: "
+            << std::setw(10)
+            << stats.stdDevMs
 
-                << " | Median: "
-                << std::setw(10)
-                << stats.medianMs
+            << " | Median: "
+            << std::setw(10)
+            << stats.medianMs
 
-                << " | P95: "
-                << std::setw(10)
-                << stats.p95Ms
+            << " | P95: "
+            << std::setw(10)
+            << stats.p95Ms
 
-                << " | Min: "
-                << std::setw(10)
-                << stats.minMs
+            << " | Min: "
+            << std::setw(10)
+            << stats.minMs
 
-                << " | Max: "
-                << stats.maxMs
+            << " | Max: "
+            << stats.maxMs
 
-                << "\n";
+            << "\n";
+}
+
+
+// ============================================================
+// VISUALIZACIÓN HARRIS + NMS
+// ============================================================
+
+/**
+ * Dibuja únicamente máximos locales fuertes del mapa Harris.
+ *
+ * Etapas:
+ *
+ *      Harris response
+ *             ↓
+ *       threshold
+ *             ↓
+ *          NMS
+ *             ↓
+ *         esquinas
+ */
+cv::Mat drawHarrisCorners(
+        const cv::Mat& original,
+        const cv::Mat& response,
+        double thresholdRatio,
+        int nmsKernel,
+        const cv::Scalar& color
+)
+{
+    if (original.empty())
+    {
+        throw std::invalid_argument(
+                "La imagen original esta vacia."
+        );
+    }
+
+
+    if (response.empty() ||
+        response.type() != CV_32FC1)
+    {
+        throw std::invalid_argument(
+                "La respuesta Harris debe ser CV_32FC1."
+        );
+    }
+
+
+    if (nmsKernel < 3 ||
+        nmsKernel % 2 == 0)
+    {
+        throw std::invalid_argument(
+                "El kernel NMS debe ser impar y >= 3."
+        );
+    }
+
+
+    cv::Mat output =
+            original.clone();
+
+
+    // --------------------------------------------------------
+    // Obtener valor máximo Harris
+    // --------------------------------------------------------
+
+    double minResponse;
+    double maxResponse;
+
+
+    cv::minMaxLoc(
+            response,
+            &minResponse,
+            &maxResponse
+    );
+
+
+    const float threshold =
+            static_cast<float>(
+                    maxResponse *
+                    thresholdRatio
+            );
+
+
+    // --------------------------------------------------------
+    // Non-Maximum Suppression
+    // --------------------------------------------------------
+    //
+    // Dilatar nos permite obtener el máximo de cada
+    // vecindario.
+    // --------------------------------------------------------
+
+    cv::Mat localMaximum;
+
+
+    cv::Mat nmsStructuringElement =
+            cv::getStructuringElement(
+                    cv::MORPH_RECT,
+                    cv::Size(
+                            nmsKernel,
+                            nmsKernel
+                    )
+            );
+
+
+    cv::dilate(
+            response,
+            localMaximum,
+            nmsStructuringElement
+    );
+
+
+    // --------------------------------------------------------
+    // Dibujar máximos locales
+    // --------------------------------------------------------
+
+    int cornerCount =
+            0;
+
+
+    for (int y = 0;
+         y < response.rows;
+         ++y)
+    {
+        for (int x = 0;
+             x < response.cols;
+             ++x)
+        {
+            const float value =
+                    response.at<float>(
+                            y,
+                            x
+                    );
+
+
+            const float neighborhoodMaximum =
+                    localMaximum.at<float>(
+                            y,
+                            x
+                    );
+
+
+            if (value > threshold &&
+                value >= neighborhoodMaximum)
+            {
+                cv::circle(
+                        output,
+                        cv::Point(
+                                x,
+                                y
+                        ),
+
+                        // radio
+                        4,
+
+                        color,
+
+                        // grosor
+                        2,
+
+                        cv::LINE_AA
+                );
+
+
+                cornerCount++;
+            }
+        }
+    }
+
+
+    std::cout
+            << "Esquinas detectadas:  "
+            << cornerCount
+            << "\n";
+
+
+    return output;
 }
 
 
@@ -179,6 +334,12 @@ void printBenchmarkStats(
 
 int main(int argc, char* argv[])
 {
+    // Crear directorio de resultados si no existe.
+    fs::create_directories(
+            "results"
+    );
+
+
     std::cout
             << "\n========================================\n"
             << " HOUGH + HARRIS ARM BENCHMARK\n"
@@ -186,17 +347,7 @@ int main(int argc, char* argv[])
 
 
     // ========================================================
-    // 1. RUTA DE LA IMAGEN
-    // ========================================================
-    //
-    // Ruta por defecto:
-    //
-    //      data/input/test.jpg
-    //
-    // También podemos proporcionar otra imagen como argumento:
-    //
-    //      hough_harris_arm otra_imagen.jpg
-    //
+    // 1. IMAGEN DE ENTRADA
     // ========================================================
 
     std::string imagePath =
@@ -216,10 +367,6 @@ int main(int argc, char* argv[])
             << "\n";
 
 
-    // ========================================================
-    // 2. CARGAR LA IMAGEN
-    // ========================================================
-
     cv::Mat image =
             cv::imread(
                     imagePath,
@@ -231,7 +378,7 @@ int main(int argc, char* argv[])
     {
         std::cerr
                 << "\nERROR: No se pudo cargar la imagen.\n"
-                << "Ruta utilizada: "
+                << "Ruta: "
                 << imagePath
                 << "\n";
 
@@ -248,7 +395,7 @@ int main(int argc, char* argv[])
 
 
     // ========================================================
-    // 3. CONVERSIÓN A ESCALA DE GRISES
+    // 2. ESCALA DE GRISES
     // ========================================================
 
     cv::Mat gray;
@@ -262,14 +409,7 @@ int main(int argc, char* argv[])
 
 
     // ========================================================
-    // 4. DETECCIÓN DE BORDES CON CANNY
-    // ========================================================
-    //
-    // Canny se utiliza únicamente como preprocesamiento.
-    //
-    // Para que posteriormente el benchmark sea justo,
-    // tanto nuestro Hough como OpenCV recibirán exactamente
-    // la misma imagen de bordes.
+    // 3. CANNY
     // ========================================================
 
     constexpr double CANNY_LOW =
@@ -290,9 +430,10 @@ int main(int argc, char* argv[])
     );
 
 
-    // Número de píxeles que participarán en la votación.
     const int edgePixels =
-            cv::countNonZero(edges);
+            cv::countNonZero(
+                    edges
+            );
 
 
     std::cout
@@ -301,8 +442,14 @@ int main(int argc, char* argv[])
             << "\n";
 
 
+    cv::imwrite(
+            "results/edges.png",
+            edges
+    );
+
+
     // ========================================================
-    // 5. EJECUTAR NUESTRO ACUMULADOR DE HOUGH
+    // 4. HOUGH PROPIO
     // ========================================================
 
     constexpr int THETA_BINS =
@@ -314,83 +461,31 @@ int main(int argc, char* argv[])
     );
 
 
-    HoughResult result =
+    HoughResult houghResult =
             hough.compute(
                     edges
             );
 
-
-    // ========================================================
-    // 6. INFORMACIÓN DEL ACUMULADOR
-    // ========================================================
-
-    std::cout
-            << "\n========================================\n"
-            << " ACUMULADOR DE HOUGH\n"
-            << "========================================\n";
-
-
-    std::cout
-            << "Rho maximo:          "
-            << result.rhoMax
-            << "\n";
-
-
-    std::cout
-            << "Bins de rho:         "
-            << result.accumulator.rows()
-            << "\n";
-
-
-    std::cout
-            << "Bins de theta:       "
-            << result.accumulator.cols()
-            << "\n";
-
-
-    std::cout
-            << "Tamano acumulador:   "
-            << result.accumulator.rows()
-            << " x "
-            << result.accumulator.cols()
-            << "\n";
-
-
-    // ========================================================
-    // 7. BUSCAR EL MÁXIMO DEL ACUMULADOR
-    // ========================================================
-    //
-    // Eigen permite recuperar:
-    //
-    //      valor máximo
-    //      fila del máximo
-    //      columna del máximo
-    //
-    // La celda con más votos corresponde a la línea
-    // dominante detectada por nuestro acumulador.
-    // ========================================================
 
     Eigen::Index maxRhoIndex;
     Eigen::Index maxThetaIndex;
 
 
     const int maxVotes =
-            result.accumulator.maxCoeff(
-                    &maxRhoIndex,
-                    &maxThetaIndex
-            );
+            houghResult
+                    .accumulator
+                    .maxCoeff(
+                            &maxRhoIndex,
+                            &maxThetaIndex
+                    );
 
-
-    // ========================================================
-    // 8. CONVERTIR ÍNDICES A rho Y theta
-    // ========================================================
 
     const int detectedRho =
             static_cast<int>(
                     maxRhoIndex
             )
             -
-            result.rhoMax;
+            houghResult.rhoMax;
 
 
     const float detectedThetaDegrees =
@@ -401,7 +496,7 @@ int main(int argc, char* argv[])
             )
             /
             static_cast<float>(
-                    result.thetaBins
+                    houghResult.thetaBins
             );
 
 
@@ -414,7 +509,31 @@ int main(int argc, char* argv[])
 
 
     std::cout
-            << "\nVoto maximo:         "
+            << "\n========================================\n"
+            << " ACUMULADOR DE HOUGH\n"
+            << "========================================\n";
+
+
+    std::cout
+            << "Rho maximo:          "
+            << houghResult.rhoMax
+            << "\n";
+
+
+    std::cout
+            << "Bins de rho:         "
+            << houghResult.accumulator.rows()
+            << "\n";
+
+
+    std::cout
+            << "Bins de theta:       "
+            << houghResult.accumulator.cols()
+            << "\n";
+
+
+    std::cout
+            << "Voto maximo:         "
             << maxVotes
             << "\n";
 
@@ -432,19 +551,7 @@ int main(int argc, char* argv[])
 
 
     // ========================================================
-    // 9. HOUGH DE REFERENCIA UTILIZANDO OPENCV
-    // ========================================================
-    //
-    // Utilizamos cv::HoughLines() para validar nuestra
-    // implementación.
-    //
-    // Ambos algoritmos reciben la MISMA imagen de bordes.
-    //
-    // Resolución:
-    //
-    //      rho   = 1 pixel
-    //      theta = 1 grado
-    //
+    // 5. HOUGH OPENCV
     // ========================================================
 
     constexpr int HOUGH_THRESHOLD =
@@ -457,46 +564,28 @@ int main(int argc, char* argv[])
     cv::HoughLines(
             edges,
             opencvLines,
-
-            // Resolución de rho
             1.0,
-
-            // Resolución angular
             CV_PI / 180.0,
-
-            // Número mínimo de votos
             HOUGH_THRESHOLD
     );
 
 
-    // ========================================================
-    // 10. MOSTRAR RESULTADO DE OPENCV
-    // ========================================================
-
     std::cout
             << "\n========================================\n"
-            << " COMPARACION CON OPENCV\n"
+            << " COMPARACION HOUGH CON OPENCV\n"
             << "========================================\n";
 
 
     std::cout
-            << "Lineas detectadas por OpenCV: "
+            << "Lineas OpenCV:       "
             << opencvLines.size()
             << "\n";
 
 
     if (!opencvLines.empty())
     {
-        const float opencvRho =
-                opencvLines[0][0];
-
-
-        const float opencvThetaRadians =
-                opencvLines[0][1];
-
-
         const float opencvThetaDegrees =
-                opencvThetaRadians
+                opencvLines[0][1]
                 *
                 180.0f
                 /
@@ -504,50 +593,32 @@ int main(int argc, char* argv[])
 
 
         std::cout
-                << "\nLinea principal OpenCV:\n";
-
-
-        std::cout
-                << "Rho:                  "
-                << opencvRho
+                << "Rho OpenCV:          "
+                << opencvLines[0][0]
                 << "\n";
 
 
         std::cout
-                << "Theta:                "
+                << "Theta OpenCV:        "
                 << opencvThetaDegrees
                 << " grados\n";
     }
 
 
     // ========================================================
-    // 11. GUARDAR IMAGEN DE BORDES
+    // 6. VISUALIZACIÓN HOUGH
     // ========================================================
 
-    cv::imwrite(
-            "results/edges.png",
-            edges
-    );
-
-
-    // ========================================================
-    // 12. DIBUJAR NUESTRA LÍNEA
-    // ========================================================
-
-    cv::Mat customResult =
+    cv::Mat customHoughImage =
             image.clone();
 
 
     drawHoughLine(
-            customResult,
-
+            customHoughImage,
             static_cast<float>(
                     detectedRho
             ),
-
             detectedThetaRadians,
-
-            // Rojo en formato BGR
             cv::Scalar(
                     0,
                     0,
@@ -558,28 +629,20 @@ int main(int argc, char* argv[])
 
     cv::imwrite(
             "results/hough_custom.jpg",
-            customResult
+            customHoughImage
     );
 
 
-    // ========================================================
-    // 13. DIBUJAR LA LÍNEA DE OPENCV
-    // ========================================================
-
     if (!opencvLines.empty())
     {
-        cv::Mat opencvResult =
+        cv::Mat opencvHoughImage =
                 image.clone();
 
 
         drawHoughLine(
-                opencvResult,
-
+                opencvHoughImage,
                 opencvLines[0][0],
-
                 opencvLines[0][1],
-
-                // Verde en formato BGR
                 cv::Scalar(
                         0,
                         255,
@@ -590,57 +653,23 @@ int main(int argc, char* argv[])
 
         cv::imwrite(
                 "results/hough_opencv.jpg",
-                opencvResult
+                opencvHoughImage
         );
     }
 
 
     // ========================================================
-    // 14. RESULTADOS GENERADOS
-    // ========================================================
-
-    std::cout
-            << "\n========================================\n"
-            << " ARCHIVOS GENERADOS\n"
-            << "========================================\n";
-
-
-    std::cout
-            << "results/edges.png\n"
-            << "results/hough_custom.jpg\n";
-
-
-    if (!opencvLines.empty())
-    {
-        std::cout
-                << "results/hough_opencv.jpg\n";
-    }
-
-
-    std::cout
-            << "\n========================================\n"
-            << " HOUGH EJECUTADO CORRECTAMENTE\n"
-            << "========================================\n";
-
-    // ========================================================
-    // CONFIGURACION HARRIS
-    // ========================================================
-    //
-    // blockSize:
-    //     ventana utilizada para integrar los gradientes.
-    //
-    // sobelKernel:
-    //     kernel utilizado para calcular Ix e Iy.
-    //
-    // Para mantener resultados válidos utilizaremos tamaños
-    // impares y pequeños.
+    // CONFIGURACION INTERACTIVA DE HARRIS
     // ========================================================
 
     int harrisBlockSize = 3;
     int harrisSobelKernel = 3;
 
-    constexpr float HARRIS_K =
-                    0.04f;
+    double harrisThresholdRatio = 0.05;
+    int harrisNmsKernel = 5;
+
+    constexpr float HARRIS_K = 0.04f;
+
 
     std::cout
                     << "\n========================================\n"
@@ -648,9 +677,23 @@ int main(int argc, char* argv[])
                     << "========================================\n";
 
 
+    // ========================================================
+    // 1. BLOCK SIZE
+    // ========================================================
+
     std::cout
-                    << "Seleccione blockSize de Harris "
-                    << "(3, 5, 7, 9): ";
+                    << "\nBLOCK SIZE\n"
+                    << "Controla el tamaño de la region utilizada para\n"
+                    << "analizar los cambios de intensidad.\n\n"
+
+                    << "Valores recomendados:\n"
+                    << "  3 -> mejor localizacion y menor costo\n"
+                    << "  5 -> balance entre precision y robustez\n"
+                    << "  7 -> mayor robustez\n"
+                    << "  9 -> regiones grandes, mayor costo\n\n"
+
+                    << "Seleccione blockSize (3, 5, 7, 9): ";
+
 
     std::cin
                     >> harrisBlockSize;
@@ -661,15 +704,28 @@ int main(int argc, char* argv[])
         harrisBlockSize != 7 &&
         harrisBlockSize != 9) {
             std::cout
-                            << "Valor no valido. Se utilizara 3.\n";
+                            << "Valor invalido. Se utilizara 3.\n";
 
             harrisBlockSize = 3;
     }
 
 
+    // ========================================================
+    // 2. KERNEL SOBEL
+    // ========================================================
+
     std::cout
-                    << "Seleccione kernel Sobel "
-                    << "(3, 5, 7): ";
+                    << "\nSOBEL KERNEL\n"
+                    << "Controla el tamano del filtro utilizado para\n"
+                    << "calcular los gradientes Ix e Iy.\n\n"
+
+                    << "Valores recomendados:\n"
+                    << "  3 -> rapido y buena localizacion\n"
+                    << "  5 -> gradiente mas suave\n"
+                    << "  7 -> mayor suavizado y mayor costo\n\n"
+
+                    << "Seleccione kernel Sobel (3, 5, 7): ";
+
 
     std::cin
                     >> harrisSobelKernel;
@@ -679,82 +735,142 @@ int main(int argc, char* argv[])
         harrisSobelKernel != 5 &&
         harrisSobelKernel != 7) {
             std::cout
-                            << "Valor no valido. Se utilizara 3.\n";
+                            << "Valor invalido. Se utilizara 3.\n";
 
             harrisSobelKernel = 3;
     }
 
+
     // ========================================================
-    // 15. EJECUTAR NUESTRO SCORE DE HARRIS
+    // 3. THRESHOLD HARRIS
     // ========================================================
     //
-    // En esta primera prueba solamente validamos:
+    // El threshold se expresa como fraccion del score maximo.
     //
-    //      - dimensiones del mapa
-    //      - valor mínimo
-    //      - valor máximo
+    // Ejemplo:
     //
-    // Todavía NO comparamos contra cv::cornerHarris().
+    //      0.05 = 5 % del maximo
+    //      0.10 = 10 % del maximo
+    //
+    // Un threshold mayor produce MENOS esquinas.
     // ========================================================
 
     std::cout
-                    << "\n========================================\n"
-                    << " HARRIS SCORE PROPIO\n"
-                    << "========================================\n";
+                    << "\nTHRESHOLD HARRIS\n"
+                    << "Controla que tan fuerte debe ser una esquina.\n\n"
+
+                    << "Valores sugeridos:\n"
+                    << "  0.03 -> alta sensibilidad, muchas esquinas\n"
+                    << "  0.05 -> sensibilidad media\n"
+                    << "  0.10 -> solo esquinas fuertes\n"
+                    << "  0.15 -> muy selectivo\n"
+                    << "  0.20 -> solo respuestas muy fuertes\n\n"
+
+                    << "Rango permitido: 0.01 - 0.30\n"
+                    << "Seleccione threshold: ";
 
 
-    // Parámetros que mantendremos fijos posteriormente
-    // durante el benchmark PC vs ARM.
+    std::cin
+                    >> harrisThresholdRatio;
 
-    // Creamos nuestro detector.
-        HarrisScore harris(
+
+    if (harrisThresholdRatio < 0.01 ||
+        harrisThresholdRatio > 0.30) {
+            std::cout
+                            << "Valor fuera de rango. Se utilizara 0.05.\n";
+
+            harrisThresholdRatio = 0.05;
+    }
+
+
+    // ========================================================
+    // 4. NON-MAXIMUM SUPPRESSION
+    // ========================================================
+    //
+    // NMS elimina respuestas cercanas y conserva solamente
+    // los maximos locales.
+    //
+    // Un kernel NMS mas grande produce menos esquinas cercanas.
+    // ========================================================
+
+    std::cout
+                    << "\nNON-MAXIMUM SUPPRESSION (NMS)\n"
+                    << "Controla la separacion entre esquinas detectadas.\n\n"
+
+                    << "Valores recomendados:\n"
+                    << "  3 -> permite esquinas muy cercanas\n"
+                    << "  5 -> balanceado\n"
+                    << "  7 -> mayor separacion\n"
+                    << "  9 -> muy selectivo\n\n"
+
+                    << "Seleccione kernel NMS (3, 5, 7, 9): ";
+
+
+    std::cin
+                    >> harrisNmsKernel;
+
+
+    if (harrisNmsKernel != 3 &&
+        harrisNmsKernel != 5 &&
+        harrisNmsKernel != 7 &&
+        harrisNmsKernel != 9) {
+            std::cout
+                            << "Valor invalido. Se utilizara 5.\n";
+
+            harrisNmsKernel = 5;
+    }
+
+
+// ========================================================
+// MOSTRAR CONFIGURACION FINAL
+// ========================================================
+
+std::cout
+        << "\n========================================\n"
+        << " CONFIGURACION SELECCIONADA\n"
+        << "========================================\n"
+
+        << "Block size:            "
+        << harrisBlockSize
+        << "\n"
+
+        << "Sobel kernel:          "
+        << harrisSobelKernel
+        << "\n"
+
+        << "Harris k:              "
+        << HARRIS_K
+        << "\n"
+
+        << "Threshold ratio:       "
+        << harrisThresholdRatio
+        << "\n"
+
+        << "NMS kernel:            "
+        << harrisNmsKernel
+        << "\n";
+
+
+    // ========================================================
+    // 8. HARRIS PROPIO
+    // ========================================================
+
+    HarrisScore harris(
             harrisBlockSize,
             harrisSobelKernel,
             HARRIS_K
     );
 
 
-    // Calculamos el mapa completo de respuesta.
     cv::Mat harrisResponse =
-                    harris.compute(
-                            gray
-                    );
+            harris.compute(
+                    gray
+            );
 
-
-    // ========================================================
-    // 16. VALIDAR DIMENSIONES
-    // ========================================================
-
-    std::cout
-                    << "Tamano respuesta:    "
-                    << harrisResponse.cols
-                    << " x "
-                    << harrisResponse.rows
-                    << "\n";
-
-
-    std::cout
-                    << "Tipo OpenCV:         "
-                    << harrisResponse.type()
-                    << "\n";
-
-
-    // ========================================================
-    // 17. OBTENER MÍNIMO Y MÁXIMO
-    // ========================================================
-    //
-    // Harris produce:
-    //
-    //      R grande positivo  -> posible esquina
-    //
-    //      R negativo         -> normalmente borde
-    //
-    //      R cercano a cero   -> región plana
-    //
-    // ========================================================
 
     double harrisMin;
     double harrisMax;
+
 
     cv::Point harrisMinLocation;
     cv::Point harrisMaxLocation;
@@ -770,42 +886,47 @@ int main(int argc, char* argv[])
 
 
     std::cout
-                    << "Score minimo:        "
-                    << harrisMin
-                    << "\n";
+            << "\n========================================\n"
+            << " HARRIS SCORE PROPIO\n"
+            << "========================================\n";
 
 
     std::cout
-                    << "Score maximo:        "
-                    << harrisMax
-                    << "\n";
+            << "Tamaño respuesta:    "
+            << harrisResponse.cols
+            << " x "
+            << harrisResponse.rows
+            << "\n";
 
 
     std::cout
-                    << "Maximo localizado:   ("
-                    << harrisMaxLocation.x
-                    << ", "
-                    << harrisMaxLocation.y
-                    << ")\n";
+            << "Tipo OpenCV:         "
+            << harrisResponse.type()
+            << "\n";
+
+
+    std::cout
+            << "Score minimo:        "
+            << harrisMin
+            << "\n";
+
+
+    std::cout
+            << "Score maximo:        "
+            << harrisMax
+            << "\n";
+
+
+    std::cout
+            << "Maximo localizado:   ("
+            << harrisMaxLocation.x
+            << ", "
+            << harrisMaxLocation.y
+            << ")\n";
 
 
     // ========================================================
-    // 18. NORMALIZAR PARA VISUALIZACIÓN
-    // ========================================================
-    //
-    // El mapa Harris utiliza float y puede contener números
-    // positivos y negativos.
-    //
-    // Para guardarlo como imagen convertimos el rango:
-    //
-    //      min ... max
-    //
-    // a:
-    //
-    //      0 ... 255
-    //
-    // Esta normalización se utiliza SOLO para visualización.
-    // No modifica los datos que posteriormente compararemos.
+    // 9. MAPA HARRIS PROPIO
     // ========================================================
 
     cv::Mat harrisNormalized;
@@ -827,29 +948,12 @@ int main(int argc, char* argv[])
     );
 
 
-    std::cout
-                    << "Mapa guardado:       "
-                    << "results/harris_custom.jpg\n";
-
     // ========================================================
-    // 19. HARRIS DE REFERENCIA CON OPENCV
-    // ========================================================
-    //
-    // Utilizamos cv::cornerHarris() para validar nuestra
-    // implementación.
-    //
-    // IMPORTANTE:
-    //
-    // Ambos métodos utilizan:
-    //
-    //      blockSize = 3
-    //      Sobel      = 3
-    //      k          = 0.04
-    //
-    // Para que la comparación sea válida.
+    // 10. HARRIS OPENCV
     // ========================================================
 
     cv::Mat gray32f;
+
 
     gray.convertTo(
             gray32f,
@@ -869,12 +973,10 @@ int main(int argc, char* argv[])
             HARRIS_K
     );
 
-    // ========================================================
-    // 20. ESTADÍSTICAS DE OPENCV
-    // ========================================================
 
     double opencvHarrisMin;
     double opencvHarrisMax;
+
 
     cv::Point opencvHarrisMinLocation;
     cv::Point opencvHarrisMaxLocation;
@@ -889,40 +991,8 @@ int main(int argc, char* argv[])
     );
 
 
-    std::cout
-                    << "\n========================================\n"
-                    << " COMPARACION HARRIS CON OPENCV\n"
-                    << "========================================\n";
-
-
-    std::cout
-                    << "Score minimo OpenCV: "
-                    << opencvHarrisMin
-                    << "\n";
-
-
-    std::cout
-                    << "Score maximo OpenCV: "
-                    << opencvHarrisMax
-                    << "\n";
-
-
-    std::cout
-                    << "Maximo OpenCV:       ("
-                    << opencvHarrisMaxLocation.x
-                    << ", "
-                    << opencvHarrisMaxLocation.y
-                    << ")\n";
-
     // ========================================================
-    // 21. COMPARACIÓN NUMÉRICA DE LOS MAPAS
-    // ========================================================
-    //
-    // cornerHarris() puede utilizar escalas internas diferentes.
-    //
-    // Por eso normalizamos ambos mapas antes de calcular el error.
-    // Esto nos permite comparar principalmente la estructura
-    // espacial de la respuesta.
+    // 11. COMPARACIÓN HARRIS
     // ========================================================
 
     cv::Mat customHarrisNorm;
@@ -948,24 +1018,56 @@ int main(int argc, char* argv[])
             CV_32F
     );
 
+
     const double harrisRmse =
-                    cv::norm(
-                            customHarrisNorm,
-                            opencvHarrisNorm,
-                            cv::NORM_L2
+            cv::norm(
+                    customHarrisNorm,
+                    opencvHarrisNorm,
+                    cv::NORM_L2
+            )
+            /
+            std::sqrt(
+                    static_cast<double>(
+                            gray.total()
                     )
-                    /
-                    std::sqrt(
-                            static_cast<double>(
-                                    gray.total()
-                            )
-                    );
+            );
 
 
     std::cout
-                    << "RMSE normalizado:    "
-                    << harrisRmse
-                    << "\n";
+            << "\n========================================\n"
+            << " COMPARACION HARRIS CON OPENCV\n"
+            << "========================================\n";
+
+
+    std::cout
+            << "Score minimo OpenCV: "
+            << opencvHarrisMin
+            << "\n";
+
+
+    std::cout
+            << "Score maximo OpenCV: "
+            << opencvHarrisMax
+            << "\n";
+
+
+    std::cout
+            << "Maximo OpenCV:       ("
+            << opencvHarrisMaxLocation.x
+            << ", "
+            << opencvHarrisMaxLocation.y
+            << ")\n";
+
+
+    std::cout
+            << "RMSE normalizado:    "
+            << harrisRmse
+            << "\n";
+
+
+    // ========================================================
+    // 12. MAPA HARRIS OPENCV
+    // ========================================================
 
     cv::Mat opencvHarrisVisualization;
 
@@ -985,151 +1087,178 @@ int main(int argc, char* argv[])
             opencvHarrisVisualization
     );
 
-    // ============================================================
-    // 22. CONFIGURACIÓN DEL BENCHMARK
-    // ============================================================
-    //
-    // Para que la comparación sea reproducible:
-    //
-    //      Warm-up:     5
-    //      Iteraciones: 100
-    //
-    // IMPORTANTE:
-    //
-    // La imagen ya fue:
-    //
-    //      - cargada
-    //      - convertida a grayscale
-    //      - procesada con Canny
-    //
-    // Por lo tanto, esos costos NO forman parte del benchmark.
-    // ============================================================
+
+    // ========================================================
+    // 13. VISUALIZACIÓN DE ESQUINAS CON NMS
+    // ========================================================
+
+    std::cout
+            << "\n========================================\n"
+            << " ESQUINAS HARRIS + NMS\n"
+            << "========================================\n";
+
+
+    std::cout
+            << "\nHarris propio:\n";
+
+
+    cv::Mat customHarrisCorners =
+                    drawHarrisCorners(
+                            image,
+                            harrisResponse,
+                            harrisThresholdRatio,
+                            harrisNmsKernel,
+                            cv::Scalar(0, 0, 255)
+                    );
+
+
+    cv::imwrite(
+            "results/harris_custom_corners.jpg",
+            customHarrisCorners
+    );
+
+
+    std::cout
+            << "\nHarris OpenCV:\n";
+
+
+    cv::Mat opencvHarrisCorners =
+                    drawHarrisCorners(
+                            image,
+                            opencvHarrisResponse,
+                            harrisThresholdRatio,
+                            harrisNmsKernel,
+                            cv::Scalar(0, 255, 0)
+                    );
+
+
+    cv::imwrite(
+            "results/harris_opencv_corners.jpg",
+            opencvHarrisCorners
+    );
+
+
+    // ========================================================
+    // 14. CONFIGURACIÓN DEL BENCHMARK
+    // ========================================================
 
     constexpr int BENCHMARK_WARMUP =
-                    5;
+            5;
 
     constexpr int BENCHMARK_ITERATIONS =
-                    100;
+            100;
+
+
+    // ========================================================
+    // 15. BENCHMARK HOUGH
+    // ========================================================
+
+    std::cout
+            << "\n========================================\n"
+            << " BENCHMARK HOUGH\n"
+            << "========================================\n";
 
 
     std::cout
-                    << "\n========================================\n"
-                    << " BENCHMARK HOUGH\n"
-                    << "========================================\n";
+            << "Warm-up:               "
+            << BENCHMARK_WARMUP
+            << "\n";
 
 
     std::cout
-                    << "Warm-up:               "
-                    << BENCHMARK_WARMUP
-                    << "\n";
+            << "Iteraciones medidas:   "
+            << BENCHMARK_ITERATIONS
+            << "\n";
 
 
     std::cout
-                    << "Iteraciones medidas:   "
-                    << BENCHMARK_ITERATIONS
-                    << "\n";
+            << "Resolucion:            "
+            << edges.cols
+            << " x "
+            << edges.rows
+            << "\n";
 
 
     std::cout
-                    << "Resolucion:            "
-                    << edges.cols
-                    << " x "
-                    << edges.rows
-                    << "\n";
+            << "Pixeles de borde:      "
+            << edgePixels
+            << "\n";
 
 
     std::cout
-                    << "Pixeles de borde:      "
-                    << edgePixels
-                    << "\n";
+            << "Bins theta:            "
+            << THETA_BINS
+            << "\n\n";
 
 
-    std::cout
-                    << "Bins theta:            "
-                    << THETA_BINS
-                    << "\n\n";
-
-    // ============================================================
-    // 23. BENCHMARK - ACUMULADOR HOUGH PROPIO
-    // ============================================================
-    //
-    // Se mide únicamente:
-    //
-    //      HoughAccumulator::compute()
-    //
-    // La búsqueda del máximo NO forma parte del tiempo medido.
-    // ============================================================
+    // --------------------------------------------------------
+    // Hough propio
+    // --------------------------------------------------------
 
     HoughResult benchmarkHoughResult;
 
 
     BenchmarkStats customHoughBenchmark =
-                    benchmark(
-                            "Hough Eigen",
-                            BENCHMARK_WARMUP,
-                            BENCHMARK_ITERATIONS,
+            benchmark(
+                    "Hough Eigen",
+                    BENCHMARK_WARMUP,
+                    BENCHMARK_ITERATIONS,
 
-                            [&]() {
-                                    benchmarkHoughResult =
-                                                    hough.compute(
-                                                            edges
-                                                    );
-                            }
-                    );
+                    [&]()
+                    {
+                        benchmarkHoughResult =
+                                hough.compute(
+                                        edges
+                                );
+                    }
+            );
+
 
     const int benchmarkMaxVote =
-                    benchmarkHoughResult
+            benchmarkHoughResult
                     .accumulator
                     .maxCoeff();
 
 
     std::cout
-                    << "Max vote validation:  "
-                    << benchmarkMaxVote
-                    << "\n";
+            << "Max vote validation:  "
+            << benchmarkMaxVote
+            << "\n";
 
-    // ============================================================
-    // 24. BENCHMARK - OPENCV HOUGHLINES
-    // ============================================================
-    //
-    // Utilizamos:
-    //
-    //      rho resolution   = 1 pixel
-    //      theta resolution = 1 grado
-    //      threshold        = 100
-    //
-    // exactamente como en nuestra validación.
-    // ============================================================
+
+    // --------------------------------------------------------
+    // OpenCV HoughLines
+    // --------------------------------------------------------
 
     std::vector<cv::Vec2f> benchmarkOpenCVLines;
 
+
     BenchmarkStats opencvHoughBenchmark =
-                    benchmark(
-                            "OpenCV HoughLines",
-                            BENCHMARK_WARMUP,
-                            BENCHMARK_ITERATIONS,
+            benchmark(
+                    "OpenCV HoughLines",
+                    BENCHMARK_WARMUP,
+                    BENCHMARK_ITERATIONS,
 
-                            [&]() {
-                                    benchmarkOpenCVLines.clear();
+                    [&]()
+                    {
+                        benchmarkOpenCVLines.clear();
 
-                                    cv::HoughLines(
-                                            edges,
-                                            benchmarkOpenCVLines,
-                                            1.0,
-                                            CV_PI / 180.0,
-                                            HOUGH_THRESHOLD
-                                    );
-                            }
-                    );
 
-    // ============================================================
-    // 25. RESULTADOS DEL BENCHMARK
-    // ============================================================
+                        cv::HoughLines(
+                                edges,
+                                benchmarkOpenCVLines,
+                                1.0,
+                                CV_PI / 180.0,
+                                HOUGH_THRESHOLD
+                        );
+                    }
+            );
+
 
     std::cout
-                    << "\n========================================\n"
-                    << " RESULTADOS HOUGH\n"
-                    << "========================================\n\n";
+            << "\n========================================\n"
+            << " RESULTADOS HOUGH\n"
+            << "========================================\n\n";
 
 
     printBenchmarkStats(
@@ -1141,213 +1270,171 @@ int main(int argc, char* argv[])
             opencvHoughBenchmark
     );
 
-    // ============================================================
-    // PREPARAR INPUT PARA BENCHMARK HARRIS
-    // ============================================================
-    //
-    // La conversión de grayscale a CV_32F se realiza FUERA
-    // del benchmark.
-    //
-    // De esta manera ambos métodos reciben exactamente
-    // la misma entrada y no medimos el costo de conversión.
-    // ============================================================
 
-    cv::Mat benchmarkGray32f;
-
-    gray.convertTo(
-            benchmarkGray32f,
-            CV_32F,
-            1.0 / 255.0
-    );
-
-    // ============================================================
-    // 26. BENCHMARK HARRIS
-    // ============================================================
+    // ========================================================
+    // 16. BENCHMARK HARRIS
+    // ========================================================
 
     std::cout
-                    << "\n========================================\n"
-                    << " BENCHMARK HARRIS\n"
-                    << "========================================\n";
+            << "\n========================================\n"
+            << " BENCHMARK HARRIS\n"
+            << "========================================\n";
+
 
     std::cout
-                    << "Warm-up:               "
-                    << BENCHMARK_WARMUP
-                    << "\n";
+            << "Warm-up:               "
+            << BENCHMARK_WARMUP
+            << "\n";
+
 
     std::cout
-                    << "Iteraciones medidas:   "
-                    << BENCHMARK_ITERATIONS
-                    << "\n";
+            << "Iteraciones medidas:   "
+            << BENCHMARK_ITERATIONS
+            << "\n";
+
 
     std::cout
-                    << "Resolucion:            "
-                    << benchmarkGray32f.cols
-                    << " x "
-                    << benchmarkGray32f.rows
-                    << "\n";
+            << "Resolucion:            "
+            << gray32f.cols
+            << " x "
+            << gray32f.rows
+            << "\n";
+
 
     std::cout
-                    << "Block size:            "
-                    << harrisBlockSize
-                    << "\n";
+            << "Block size:            "
+            << harrisBlockSize
+            << "\n";
+
 
     std::cout
-                    << "Sobel kernel:          "
-                    << harrisSobelKernel
-                    << "\n";
+            << "Sobel kernel:          "
+            << harrisSobelKernel
+            << "\n";
+
 
     std::cout
-                    << "Harris k:              "
-                    << HARRIS_K
-                    << "\n\n";
+            << "Harris k:              "
+            << HARRIS_K
+            << "\n\n";
 
-    // ============================================================
-    // 27. BENCHMARK - HARRIS PROPIO + EIGEN
-    // ============================================================
-    //
-    // Se mide:
-    //
-    //      Sobel X/Y
-    //      Ix², Iy², IxIy
-    //      boxFilter
-    //      cálculo del score con Eigen
-    //
-    // NO se mide:
-    //
-    //      carga de imagen
-    //      grayscale
-    //      conversión a CV_32F
-    //      normalización
-    //      visualización
-    // ============================================================
+
+    // --------------------------------------------------------
+    // Harris propio
+    // --------------------------------------------------------
 
     cv::Mat benchmarkCustomHarris;
 
 
     BenchmarkStats customHarrisBenchmark =
-                    benchmark(
-                            "Harris Eigen",
-                            BENCHMARK_WARMUP,
-                            BENCHMARK_ITERATIONS,
+            benchmark(
+                    "Harris Eigen",
+                    BENCHMARK_WARMUP,
+                    BENCHMARK_ITERATIONS,
 
-                            [&]() {
-                                    benchmarkCustomHarris =
-                                                    harris.compute(
-                                                            benchmarkGray32f
-                                                    );
-                            }
-                    );
+                    [&]()
+                    {
+                        benchmarkCustomHarris =
+                                harris.compute(
+                                        gray32f
+                                );
+                    }
+            );
 
-    // ============================================================
-    // 28. BENCHMARK - OPENCV CORNER HARRIS
-    // ============================================================
-    //
-    // Utiliza exactamente:
-    //
-    //      blockSize = 3
-    //      Sobel      = 3
-    //      k          = 0.04
-    //
-    // con la misma imagen CV_32F.
-    // ============================================================
+
+    // --------------------------------------------------------
+    // OpenCV cornerHarris
+    // --------------------------------------------------------
 
     cv::Mat benchmarkOpenCVHarris;
 
 
     BenchmarkStats opencvHarrisBenchmark =
-                    benchmark(
-                            "OpenCV cornerHarris",
-                            BENCHMARK_WARMUP,
-                            BENCHMARK_ITERATIONS,
+            benchmark(
+                    "OpenCV cornerHarris",
+                    BENCHMARK_WARMUP,
+                    BENCHMARK_ITERATIONS,
 
-                            [&]() {
-                                    cv::cornerHarris(
-                                            benchmarkGray32f,
-                                            benchmarkOpenCVHarris,
-                                            harrisBlockSize,
-                                            harrisSobelKernel,
-                                            HARRIS_K
-                                    );
-                            }
-                    );
-
-    // ============================================================
-    // 29. VALIDACIÓN POST-BENCHMARK
-    // ============================================================
-
-    double customBenchmarkMin;
-    double customBenchmarkMax;
-
-    cv::Point customBenchmarkMaxLocation;
+                    [&]()
+                    {
+                        cv::cornerHarris(
+                                gray32f,
+                                benchmarkOpenCVHarris,
+                                harrisBlockSize,
+                                harrisSobelKernel,
+                                HARRIS_K
+                        );
+                    }
+            );
 
 
-    cv::minMaxLoc(
-            benchmarkCustomHarris,
-            &customBenchmarkMin,
-            &customBenchmarkMax,
-            nullptr,
-            &customBenchmarkMaxLocation
-    );
-
-
-    std::cout
-                    << "Max Harris validation: "
-                    << customBenchmarkMax
-                    << "\n";
-
-
-    std::cout
-                    << "Max location:          ("
-                    << customBenchmarkMaxLocation.x
-                    << ", "
-                    << customBenchmarkMaxLocation.y
-                    << ")\n";
-
-    // ============================================================
-    // 30. BENCHMARK - MINIMUM EIGENVALUE
-    // ============================================================
-    //
-    // cornerMinEigenVal() utiliza el menor autovalor de la
-    // matriz de estructura como medida de respuesta.
-    //
-    // Nos sirve como alternativa directa al score de Harris:
-    //
-    //      Harris:
-    //          R = det(M) - k * trace(M)^2
-    //
-    //      MinEigenVal:
-    //          R = min(lambda1, lambda2)
-    //
-    // Ambos producen un mapa de respuesta por pixel.
-    // ============================================================
+    // --------------------------------------------------------
+    // OpenCV minimum eigenvalue
+    // --------------------------------------------------------
 
     cv::Mat benchmarkMinEigen;
 
 
     BenchmarkStats minEigenBenchmark =
-                    benchmark(
-                            "OpenCV minEigenVal",
-                            BENCHMARK_WARMUP,
-                            BENCHMARK_ITERATIONS,
+            benchmark(
+                    "OpenCV minEigenVal",
+                    BENCHMARK_WARMUP,
+                    BENCHMARK_ITERATIONS,
 
-                            [&]() {
-                                    cv::cornerMinEigenVal(
-                                            benchmarkGray32f,
-                                            benchmarkMinEigen,
-                                            harrisBlockSize,
-                                            harrisSobelKernel
-                                    );
-                            }
-                    );
+                    [&]()
+                    {
+                        cv::cornerMinEigenVal(
+                                gray32f,
+                                benchmarkMinEigen,
+                                harrisBlockSize,
+                                harrisSobelKernel
+                        );
+                    }
+            );
 
-    // ============================================================
-    // 31. RESULTADOS HARRIS
-    // ============================================================
+
+    // ========================================================
+    // 17. VALIDACIÓN POST-BENCHMARK HARRIS
+    // ========================================================
+
+    double benchmarkHarrisMin;
+    double benchmarkHarrisMax;
+
+
+    cv::Point benchmarkHarrisMaxLocation;
+
+
+    cv::minMaxLoc(
+            benchmarkCustomHarris,
+            &benchmarkHarrisMin,
+            &benchmarkHarrisMax,
+            nullptr,
+            &benchmarkHarrisMaxLocation
+    );
+
 
     std::cout
-                    << "\n========================================\n"
-                    << " RESULTADOS HARRIS\n"
-                    << "========================================\n\n";
+            << "Max Harris validation: "
+            << benchmarkHarrisMax
+            << "\n";
+
+
+    std::cout
+            << "Max location:          ("
+            << benchmarkHarrisMaxLocation.x
+            << ", "
+            << benchmarkHarrisMaxLocation.y
+            << ")\n";
+
+
+    // ========================================================
+    // 18. RESULTADOS HARRIS
+    // ========================================================
+
+    std::cout
+            << "\n========================================\n"
+            << " RESULTADOS HARRIS\n"
+            << "========================================\n\n";
 
 
     printBenchmarkStats(
@@ -1359,10 +1446,37 @@ int main(int argc, char* argv[])
             opencvHarrisBenchmark
     );
 
+
     printBenchmarkStats(
             minEigenBenchmark
     );
 
-    return 0;
 
+    // ========================================================
+    // 19. ARCHIVOS GENERADOS
+    // ========================================================
+
+    std::cout
+            << "\n========================================\n"
+            << " ARCHIVOS GENERADOS\n"
+            << "========================================\n";
+
+
+    std::cout
+            << "results/edges.png\n"
+            << "results/hough_custom.jpg\n"
+            << "results/hough_opencv.jpg\n"
+            << "results/harris_custom.jpg\n"
+            << "results/harris_opencv.jpg\n"
+            << "results/harris_custom_corners.jpg\n"
+            << "results/harris_opencv_corners.jpg\n";
+
+
+    std::cout
+            << "\n========================================\n"
+            << " EXPERIMENTO FINALIZADO\n"
+            << "========================================\n";
+
+
+    return 0;
 }
