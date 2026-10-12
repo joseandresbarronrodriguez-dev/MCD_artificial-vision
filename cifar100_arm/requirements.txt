@@ -1,0 +1,9 @@
+keras>=3,<4
+torch
+numpy
+matplotlib
+pandas
+scikit-learn
+scikit-image
+opencv-python
+seaborn

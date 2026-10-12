@@ -26,3 +26,11 @@ build/
 *.log
 *.tmp
 /vcpkg_installed/
+
+# CIFAR-100
+cifar100_arm/.venv/
+cifar100_arm/results/**/*.keras
+
+# Python
+__pycache__/
+*.pyc
