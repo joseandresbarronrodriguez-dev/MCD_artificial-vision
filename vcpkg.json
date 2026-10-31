@@ -1,0 +1,8 @@
+{
+  "name": "vision-artificial",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "opencv4",
+    "libraw"
+  ]
+}
